@@ -1,0 +1,2 @@
+-- We have already modified the live DB in Phase 1 directly, but this represents the final state
+-- The tables and triggers were correctly created in the live project earlier
