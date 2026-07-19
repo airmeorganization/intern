@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Internship Portal</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <!-- Scripts -->
+    <script>
+        // State variables
+        let currentView = 'auth';
+        let isSignup = false;
+        let selectedInternshipId = null;
+        let selectedResumeFile = null;
+
+        // UI Helpers
+        function switchView(viewId) {
+            document.querySelectorAll('.view-section').forEach(el => el.classList.remove('active'));
+            document.getElementById(`view-${viewId}`).classList.add('active');
+            currentView = viewId;
+
+            if (viewId === 'dashboard') loadInternships();
+            if (viewId === 'profile') loadProfile();
+        }
+
+        function toggleAuthMode() {
+            isSignup = !isSignup;
+            document.getElementById('auth-title').innerText = isSignup ? 'Sign Up' : 'Login';
+            document.getElementById('auth-submit').innerText = isSignup ? 'Create Account' : 'Sign In';
+            document.getElementById('auth-toggle').innerText = isSignup ? 'Already have an account? Login' : 'Need an account? Sign up';
+
+            const signupFields = document.getElementById('signup-fields');
+            if (isSignup) {
+                signupFields.classList.remove('hidden');
+                document.getElementById('auth-name').required = true;
+            } else {
+                signupFields.classList.add('hidden');
+                document.getElementById('auth-name').required = false;
+            }
+
+            document.getElementById('auth-error').classList.add('hidden');
+        }
+
+        function toggleAIPanel() {
+            const panel = document.getElementById('ai-panel');
+            if (panel.classList.contains('hidden')) {
+                panel.classList.remove('hidden');
+                panel.classList.add('flex');
+            } else {
+                panel.classList.add('hidden');
+                panel.classList.remove('flex');
+            }
+        }
+
+        function closeModal(id) {
+            document.getElementById(id).classList.add('hidden');
+        }
+
+        function showApplyModal(id, title) {
+            selectedInternshipId = id;
+            document.getElementById('apply-internship-title').innerText = title;
+            document.getElementById('modal-apply').classList.remove('hidden');
+            document.getElementById('apply-status').classList.add('hidden');
+            document.getElementById('btn-submit-app').disabled = false;
+        }
+
+        // Configuration
+        const SUPABASE_URL = 'https://gcmlgodatxcvcmyyyoay.supabase.co';
+        const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdjbWxnb2RhdHhjdmNteXl5b2F5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQzODI4ODIsImV4cCI6MjA5OTk1ODg4Mn0.GxvuIn7Fzmp-7T1zrtGRm3AcOlI4GjJEsxCKumXB4cI';
+        const AI_WORKER_URL = 'https://intern.nikhithathanniru30.workers.dev';
+
+        // Initialize Supabase Client
+        const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+        let currentUser = null;
+        let userProfile = null;
+
+        // Check active session on load
+        async function checkSession() {
+            const { data: { session }, error } = await supabase.auth.getSession();
+            if (session) {
+                currentUser = session.user;
+                await fetchUserProfile(currentUser.id);
+                document.getElementById('nav-links-auth').classList.remove('hidden');
+                document.getElementById('nav-links-auth').classList.add('flex');
+                switchView('dashboard');
+            } else {
+                switchView('auth');
+            }
+        }
+
+        async function fetchUserProfile(userId) {
+            try {
+                const { data, error } = await supabase
+                    .from('users')
+                    .select('*')
+                    .eq('id', userId)
+                    .single();
+
+                if (error) throw error;
+                userProfile = data;
+
+                // Show/hide company actions
+                if (userProfile && userProfile.role === 'company') {
+                    document.getElementById('company-actions').classList.remove('hidden');
+                }
+            } catch (error) {
+                console.error('Error fetching user profile:', error);
+            }
+        }
+
+        // Auth Logic
+        async function handleAuth(e) {
+            e.preventDefault();
+            const email = document.getElementById('auth-email').value;
+            const password = document.getElementById('auth-password').value;
+            const errorDiv = document.getElementById('auth-error');
+            const submitBtn = document.getElementById('auth-submit');
+
+            errorDiv.classList.add('hidden');
+            submitBtn.disabled = true;
+            submitBtn.innerText = 'Loading...';
+
+            try {
+                if (isSignup) {
+                    const fullName = document.getElementById('auth-name').value;
+                    const role = document.getElementById('auth-role').value;
+
+                    const { data, error } = await supabase.auth.signUp({
+                        email,
+                        password,
+                    });
+
+                    if (error) throw error;
+
+                    // Supabase trigger usually handles inserting into users table,
+                    // but we'll do an explicit update just in case or if trigger doesn't exist
+                    if (data.user) {
+                        const { error: profileError } = await supabase
+                            .from('users')
+                            .upsert({
+                                id: data.user.id,
+                                email: email,
+                                full_name: fullName,
+                                role: role
+                            });
+
+                        if (profileError) {
+                            console.error("Error creating user profile:", profileError);
+                        }
+
+                        if (role === 'student') {
+                             await supabase.from('student_profiles').upsert({
+                                 user_id: data.user.id
+                             });
+                        } else if (role === 'company') {
+                             await supabase.from('companies').upsert({
+                                 user_id: data.user.id,
+                                 company_name: fullName,
+                                 description: 'New company profile'
+                             });
+                        }
+                    }
+
+                    alert('Signup successful! Please check your email for verification if required, or you will be logged in immediately.');
+
+                    if (data.session) {
+                        currentUser = data.session.user;
+                        await fetchUserProfile(currentUser.id);
+                        document.getElementById('nav-links-auth').classList.remove('hidden');
+                        document.getElementById('nav-links-auth').classList.add('flex');
+                        switchView('dashboard');
+                    } else {
+                        // Switch back to login mode if email confirmation is required
+                        toggleAuthMode();
+                    }
+
+                } else {
+                    const { data, error } = await supabase.auth.signInWithPassword({
+                        email,
+                        password,
+                    });
+
+                    if (error) throw error;
+
+                    currentUser = data.session.user;
+                    await fetchUserProfile(currentUser.id);
+
+                    document.getElementById('nav-links-auth').classList.remove('hidden');
+                    document.getElementById('nav-links-auth').classList.add('flex');
+                    switchView('dashboard');
+                }
+            } catch (error) {
+                errorDiv.innerText = error.message || 'An error occurred during authentication';
+                errorDiv.classList.remove('hidden');
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.innerText = isSignup ? 'Create Account' : 'Sign In';
+            }
+        }
+
+        async function handleLogout() {
+            try {
+                await supabase.auth.signOut();
+                currentUser = null;
+                userProfile = null;
+
+                document.getElementById('nav-links-auth').classList.add('hidden');
+                document.getElementById('nav-links-auth').classList.remove('flex');
+                document.getElementById('company-actions').classList.add('hidden');
+
+                // Clear inputs
+                document.getElementById('auth-form').reset();
+                document.getElementById('auth-error').classList.add('hidden');
+
+                switchView('auth');
+            } catch (error) {
+                console.error('Error logging out:', error);
+            }
+        }
+
+        // Dashboard Logic
+        async function loadInternships() {
+            const listEl = document.getElementById('internships-list');
+            const loadingEl = document.getElementById('internships-loading');
+
+            listEl.innerHTML = '';
+            loadingEl.classList.remove('hidden');
+
+            try {
+                const { data: internships, error } = await supabase
+                    .from('internships')
+                    .select(`
+                        id,
+                        title,
+                        description,
+                        location,
+                        duration,
+                        stipend,
+                        work_mode,
+                        companies(company_name)
+                    `)
+                    .order('created_at', { ascending: false });
+
+                if (error) throw error;
+
+                loadingEl.classList.add('hidden');
+
+                if (internships.length === 0) {
+                    listEl.innerHTML = '<div class="col-span-2 text-xl font-bold p-8 border-2 border-black bg-white shadow-neo text-center">No internships available right now.</div>';
+                    return;
+                }
+
+                internships.forEach(intern => {
+                    const companyName = intern.companies ? intern.companies.company_name : 'Unknown Company';
+
+                    // Create card element
+                    const card = document.createElement('div');
+                    card.className = 'border-4 border-black bg-white shadow-neo p-6 hover:-translate-y-1 hover:shadow-neo-lg transition-all flex flex-col h-full';
+
+                    let tagsHTML = '';
+                    if (intern.work_mode) tagsHTML += `<span class="px-2 py-1 border-2 border-black bg-secondary text-sm font-bold shadow-neo-sm">${intern.work_mode}</span>`;
+                    if (intern.location) tagsHTML += `<span class="px-2 py-1 border-2 border-black bg-white text-sm font-bold shadow-neo-sm">${intern.location}</span>`;
+                    if (intern.duration) tagsHTML += `<span class="px-2 py-1 border-2 border-black bg-white text-sm font-bold shadow-neo-sm">${intern.duration}</span>`;
+                    if (intern.stipend) tagsHTML += `<span class="px-2 py-1 border-2 border-black bg-accent text-sm font-bold shadow-neo-sm">${intern.stipend}</span>`;
+
+                    const isCompany = userProfile && userProfile.role === 'company';
+
+                    card.innerHTML = `
+                        <div class="flex-grow">
+                            <h3 class="text-2xl font-black uppercase mb-1">${intern.title}</h3>
+                            <p class="font-bold text-gray-600 mb-4 pb-4 border-b-2 border-black">${companyName}</p>
+                            <p class="mb-4 line-clamp-3">${intern.description || 'No description provided.'}</p>
+                            <div class="flex flex-wrap gap-2 mb-6">
+                                ${tagsHTML}
+                            </div>
+                        </div>
+                        <div class="mt-auto pt-4 border-t-2 border-black">
+                            ${isCompany
+                                ? `<button disabled class="btn-neo bg-gray-200 w-full opacity-50 cursor-not-allowed text-center">Companies cannot apply</button>`
+                                : `<button onclick="showApplyModal('${intern.id}', '${intern.title.replace(/'/g, "\\'")}')" class="btn-neo-primary w-full text-lg">Apply Now</button>`
+                            }
+                        </div>
+                    `;
+
+                    listEl.appendChild(card);
+                });
+
+            } catch (error) {
+                console.error("Error loading internships:", error);
+                loadingEl.classList.add('hidden');
+                listEl.innerHTML = `<div class="col-span-2 text-xl font-bold p-8 border-2 border-black bg-danger text-white shadow-neo text-center">Failed to load internships: ${error.message}</div>`;
+            }
+        }
+
+        // Application Logic
+        async function submitApplication() {
+            const btn = document.getElementById('btn-submit-app');
+            const statusDiv = document.getElementById('apply-status');
+
+            btn.disabled = true;
+            btn.innerText = 'Applying...';
+            statusDiv.classList.add('hidden');
+
+            try {
+                // Ensure profile exists or is created
+                const { data: existingApp, error: checkError } = await supabase
+                    .from('applications')
+                    .select('id')
+                    .eq('student_id', currentUser.id)
+                    .eq('internship_id', selectedInternshipId)
+                    .single();
+
+                if (checkError && checkError.code !== 'PGRST116') { // PGRST116 is "not found", which is good here
+                    throw checkError;
+                }
+
+                if (existingApp) {
+                    throw new Error("You have already applied for this internship.");
+                }
+
+                const { error: insertError } = await supabase
+                    .from('applications')
+                    .insert({
+                        student_id: currentUser.id,
+                        internship_id: selectedInternshipId,
+                        status: 'Applied'
+                    });
+
+                if (insertError) throw insertError;
+
+                statusDiv.innerText = 'Application submitted successfully!';
+                statusDiv.className = 'mb-4 font-bold p-2 border-2 border-black bg-accent text-black block';
+
+                setTimeout(() => {
+                    closeModal('modal-apply');
+                }, 1500);
+
+            } catch (error) {
+                console.error("Application error:", error);
+                statusDiv.innerText = error.message || 'Failed to submit application.';
+                statusDiv.className = 'mb-4 font-bold p-2 border-2 border-black bg-danger text-white block';
+                btn.disabled = false;
+                btn.innerText = 'Try Again';
+            }
+        }
+
+        // Profile & Resume Logic
+        async function loadProfile() {
+            if (!currentUser) return;
+
+            document.getElementById('profile-name').value = userProfile?.full_name || currentUser.email;
+
+            try {
+                const { data, error } = await supabase
+                    .from('student_profiles')
+                    .select('*')
+                    .eq('user_id', currentUser.id)
+                    .single();
+
+                if (error && error.code !== 'PGRST116') throw error;
+
+                if (data) {
+                    document.getElementById('profile-education').value = data.education || '';
+                    document.getElementById('profile-location').value = data.location || '';
+
+                    if (data.resume_url) {
+                        const viewLink = document.getElementById('view-resume-link');
+                        viewLink.href = data.resume_url;
+                        viewLink.classList.remove('hidden');
+                        viewLink.classList.add('inline-block');
+                        document.getElementById('resume-filename').innerText = "Resume uploaded";
+                    }
+                }
+            } catch (error) {
+                console.error("Error loading profile details:", error);
+            }
+        }
+
+        async function handleProfileUpdate(e) {
+            e.preventDefault();
+            const submitBtn = e.target.querySelector('button[type="submit"]');
+            submitBtn.disabled = true;
+            submitBtn.innerText = 'Saving...';
+
+            try {
+                const education = document.getElementById('profile-education').value;
+                const location = document.getElementById('profile-location').value;
+
+                const { error } = await supabase
+                    .from('student_profiles')
+                    .upsert({
+                        user_id: currentUser.id,
+                        education: education,
+                        location: location,
+                        updated_at: new Date().toISOString()
+                    });
+
+                if (error) throw error;
+
+                alert('Profile updated successfully!');
+            } catch (error) {
+                console.error("Error updating profile:", error);
+                alert('Failed to update profile: ' + error.message);
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.innerText = 'Save Profile';
+            }
+        }
+
+        function handleResumeSelect(e) {
+            const file = e.target.files[0];
+            if (file) {
+                selectedResumeFile = file;
+                document.getElementById('resume-filename').innerText = file.name;
+                document.getElementById('upload-resume-btn').classList.remove('hidden');
+                document.getElementById('upload-resume-btn').classList.add('inline-block');
+                document.getElementById('resume-upload-status').innerText = '';
+            }
+        }
+
+        async function uploadResume() {
+            if (!selectedResumeFile || !currentUser) return;
+
+            const btn = document.getElementById('upload-resume-btn');
+            const statusDiv = document.getElementById('resume-upload-status');
+
+            btn.disabled = true;
+            btn.innerText = 'Uploading...';
+
+            try {
+                const fileExt = selectedResumeFile.name.split('.').pop();
+                const fileName = `${currentUser.id}_resume_${Date.now()}.${fileExt}`;
+                const filePath = `${fileName}`;
+
+                // Upload file to storage
+                const { error: uploadError } = await supabase.storage
+                    .from('resumes')
+                    .upload(filePath, selectedResumeFile, { upsert: true });
+
+                if (uploadError) throw uploadError;
+
+                // Get public URL
+                const { data: publicUrlData } = supabase.storage
+                    .from('resumes')
+                    .getPublicUrl(filePath);
+
+                const publicUrl = publicUrlData.publicUrl;
+
+                // Update profile with resume URL
+                const { error: updateError } = await supabase
+                    .from('student_profiles')
+                    .upsert({
+                        user_id: currentUser.id,
+                        resume_url: publicUrl,
+                        updated_at: new Date().toISOString()
+                    });
+
+                if (updateError) throw updateError;
+
+                statusDiv.innerText = 'Resume uploaded successfully!';
+                statusDiv.className = 'mt-2 text-sm font-bold text-accent';
+
+                const viewLink = document.getElementById('view-resume-link');
+                viewLink.href = publicUrl;
+                viewLink.classList.remove('hidden');
+                viewLink.classList.add('inline-block');
+
+                btn.classList.add('hidden');
+                btn.classList.remove('inline-block');
+
+            } catch (error) {
+                console.error("Error uploading resume:", error);
+                statusDiv.innerText = 'Failed to upload: ' + error.message;
+                statusDiv.className = 'mt-2 text-sm font-bold text-danger';
+                btn.disabled = false;
+                btn.innerText = 'Try Again';
+            }
+        }
+
+        // AI Assistant Logic
+        async function handleAIChat(e) {
+            e.preventDefault();
+            const input = document.getElementById('ai-input');
+            const message = input.value.trim();
+            if (!message) return;
+
+            const messagesContainer = document.getElementById('ai-messages');
+
+            // Append user message
+            messagesContainer.innerHTML += `
+                <div class="flex items-start justify-end">
+                    <div class="bg-primary border-2 border-black p-2 max-w-[85%] rounded-bl-none shadow-neo-sm">
+                        <p class="text-sm font-bold">${escapeHTML(message)}</p>
+                    </div>
+                </div>
+            `;
+
+            input.value = '';
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+
+            // Append loading indicator
+            const loadingId = 'loading-' + Date.now();
+            messagesContainer.innerHTML += `
+                <div id="${loadingId}" class="flex items-start">
+                    <div class="bg-white border-2 border-black p-2 max-w-[85%] rounded-br-none shadow-neo-sm">
+                        <p class="text-sm font-bold animate-pulse">Thinking...</p>
+                    </div>
+                </div>
+            `;
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+
+            try {
+                // Determine user context for the AI
+                let userContext = "";
+                if (currentUser) {
+                     userContext = ` The user asking is logged in as a ${userProfile?.role || 'user'}.`;
+                }
+
+                const response = await fetch(AI_WORKER_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        prompt: message + userContext
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                const data = await response.json();
+
+                // Remove loading
+                document.getElementById(loadingId).remove();
+
+                // Append AI response
+                messagesContainer.innerHTML += `
+                    <div class="flex items-start">
+                        <div class="bg-white border-2 border-black p-2 max-w-[85%] rounded-br-none shadow-neo-sm">
+                            <p class="text-sm font-bold whitespace-pre-wrap">${escapeHTML(data.response || 'Sorry, I could not generate a response.')}</p>
+                        </div>
+                    </div>
+                `;
+
+            } catch (error) {
+                console.error("AI Error:", error);
+                document.getElementById(loadingId).remove();
+                messagesContainer.innerHTML += `
+                    <div class="flex items-start">
+                        <div class="bg-danger text-white border-2 border-black p-2 max-w-[85%] rounded-br-none shadow-neo-sm">
+                            <p class="text-sm font-bold">Sorry, I encountered an error. Please try again later.</p>
+                        </div>
+                    </div>
+                `;
+            }
+
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+
+        function escapeHTML(str) {
+            return str
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
+
+        // Initialize App
+        window.addEventListener('DOMContentLoaded', () => {
+            checkSession();
+        });
+    </script>
+</body>
+</html>
